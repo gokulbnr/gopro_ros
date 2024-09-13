@@ -28,7 +28,7 @@ private:
   AVFormatContext* pFormatContext = NULL;
   uint32_t videoStreamIndex;
   AVCodecContext* pCodecContext = NULL;
-  AVCodec* pCodec = NULL;
+  // AVCodec* pCodec = NULL;
   AVFrame* pFrame = NULL;
   AVFrame* pFrameRGB = NULL;
   AVPacket packet;
