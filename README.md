@@ -44,7 +44,7 @@ sudo apt install libopencv-dev
 - Install FFmpeg
 
 ```bash
-sudo apt install ffmpeg
+sudo apt install ffmpeg libpostproc-dev libavdevice-dev libavfilter-dev
 ```
 
 - Install Eigen3
