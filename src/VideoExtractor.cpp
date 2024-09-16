@@ -249,66 +249,65 @@ int GoProVideoExtractor::extractFrames(const std::string& image_folder,
   uint64_t global_video_pkt_pts = AV_NOPTS_VALUE;
 
   int frameFinished;
-  // while (av_receive_frame(pFormatContext, &packet) >= 0) {
-  while (avcodec_receive_frame(pCodecContext, pFrame) >= 0) {
-    // Is this a packet from the video stream?
-    if (packet.stream_index == videoStreamIndex) {
-      // Decode video frame
-      // avcodec_decode_video2(pCodecContext, pFrame, &frameFinished, &packet);
+  while (av_read_frame(pFormatContext, &packet) >= 0) {
+      // Is this a packet from the video stream?
+      if (packet.stream_index == videoStreamIndex) {
+          // Send the packet to the decoder
+          if (avcodec_send_packet(pCodecContext, &packet) == 0) {
+              // Receive all available frames
+              while (avcodec_receive_frame(pCodecContext, pFrame) == 0) {
+                  // Calculate global clock
+                  if (packet.dts != AV_NOPTS_VALUE) {
+                      global_clock = pFrame->best_effort_timestamp;
+                      global_video_pkt_pts = packet.pts;
+                  } else if (global_video_pkt_pts && global_video_pkt_pts != AV_NOPTS_VALUE) {
+                      global_clock = global_video_pkt_pts;
+                  } else {
+                      global_clock = 0;
+                  }
 
-      // Did we get a video frame?
+                  double frame_delay = av_q2d(video_stream->time_base);
+                  global_clock *= frame_delay;
 
-      if (packet.dts != AV_NOPTS_VALUE) {
-        global_clock = pFrame->best_effort_timestamp; // av_frame_get_best_effort_timestamp(pFrame);
-        global_video_pkt_pts = packet.pts;
-      } else if (global_video_pkt_pts && global_video_pkt_pts != AV_NOPTS_VALUE) {
-        global_clock = global_video_pkt_pts;
-      } else {
-        global_clock = 0;
+                  // Handle frame repetition delay
+                  if (pFrame->repeat_pict > 0) {
+                      double extra_delay = pFrame->repeat_pict * (frame_delay * 0.5);
+                      global_clock += extra_delay;
+                  }
+
+                  // Convert the image from its native format to RGB
+                  sws_scale(sws_ctx,
+                            (uint8_t const* const*)pFrame->data,
+                            pFrame->linesize,
+                            0,
+                            pCodecContext->height,
+                            pFrameRGB->data,
+                            pFrameRGB->linesize);
+
+                  // Save the frame to disk
+                  uint64_t nanosecs = (uint64_t)(global_clock * 1e9);
+                  if (nanosecs > last_image_stamp_ns) {
+                      break;
+                  }
+                  uint64_t current_stamp = video_creation_time + nanosecs;
+                  std::string string_stamp = uint64_to_string(current_stamp);
+                  std::string stamped_image_filename = image_data_folder + "/" + string_stamp;
+                  image_stream << string_stamp << "," << string_stamp + ".png" << std::endl;
+                  
+                  save_to_png(pFrameRGB,
+                              pCodecContext,
+                              image_width,
+                              image_height,
+                              video_stream->time_base,
+                              stamped_image_filename);
+              }
+          }
       }
 
-      double frame_delay = av_q2d(video_stream->time_base);
-      global_clock *= frame_delay;
-
-      // Only if we are repeating the
-      if (pFrame->repeat_pict > 0) {
-        double extra_delay = pFrame->repeat_pict * (frame_delay * 0.5);
-        global_clock += extra_delay;
-      }
-
-      if (frameFinished) {
-        // Convert the image from its native format to RGB
-        sws_scale(sws_ctx,
-                  (uint8_t const* const*)pFrame->data,
-                  pFrame->linesize,
-                  0,
-                  pCodecContext->height,
-                  pFrameRGB->data,
-                  pFrameRGB->linesize);
-
-        // Save the frame to disk
-        // std::cout << "Global Clock: " << global_clock << std::endl;
-        uint64_t nanosecs = (uint64_t)(global_clock * 1e9);
-        // std::cout << "Nano secs: " << nanosecs << std::endl;
-        if (nanosecs > last_image_stamp_ns) {
-          break;
-        }
-        uint64_t current_stamp = video_creation_time + nanosecs;
-        std::string string_stamp = uint64_to_string(current_stamp);
-        std::string stamped_image_filename = image_data_folder + "/" + string_stamp;
-        image_stream << string_stamp << "," << string_stamp + ".png" << std::endl;
-        save_to_png(pFrameRGB,
-                    pCodecContext,
-                    image_width,
-                    image_height,
-                    video_stream->time_base,
-                    stamped_image_filename);
-      }
-    }
-
-    // Free the packet that was allocated by av_read_frame
-    av_packet_unref(&packet);
+      // Free the packet that was allocated by av_read_frame
+      av_packet_unref(&packet);
   }
+
 
   image_stream.close();
 
@@ -334,43 +333,47 @@ int GoProVideoExtractor::getFrameStamps(std::vector<uint64_t>& stamps) {
   uint64_t global_video_pkt_pts = AV_NOPTS_VALUE;
   int frameFinished;
   uint32_t frame_count = 0;
-  // while (av_read_frame(pFormatContext, &packet) >= 0) {
-  while (avcodec_receive_frame(pCodecContext, pFrame) >= 0) {
-    // Is this a packet from the video stream?
-    if (packet.stream_index == videoStreamIndex) {
-      // Decode video frame
-      //			avcodec_send_packet(pCodecContext, &packet);
-      //			frameFinished = avcodec_receive_frame(pCodecContext, pFrameRGB);
-      // avcodec_decode_video2(pCodecContext, pFrame, &frameFinished, &packet);
+  while (av_read_frame(pFormatContext, &packet) >= 0) {
+      // Is this a packet from the video stream?
+      if (packet.stream_index == videoStreamIndex) {
+          // Send the packet to the decoder
+          if (avcodec_send_packet(pCodecContext, &packet) == 0) {
+              // Receive the decoded frame(s)
+              while (avcodec_receive_frame(pCodecContext, pFrame) == 0) {
+                  
+                  // Calculate global clock
+                  if (packet.dts != AV_NOPTS_VALUE) {
+                      global_clock = pFrame->best_effort_timestamp;
+                      global_video_pkt_pts = packet.pts;
+                  } else if (global_video_pkt_pts && global_video_pkt_pts != AV_NOPTS_VALUE) {
+                      global_clock = global_video_pkt_pts;
+                  } else {
+                      global_clock = 0;
+                  }
 
-      // Did we get a video frame?
+                  double frame_delay = av_q2d(video_stream->time_base);
+                  global_clock *= frame_delay;
 
-      if (packet.dts != AV_NOPTS_VALUE) {
-        global_clock = pFrame->best_effort_timestamp; // av_frame_get_best_effort_timestamp(pFrame);
-        global_video_pkt_pts = packet.pts;
-      } else if (global_video_pkt_pts && global_video_pkt_pts != AV_NOPTS_VALUE) {
-        global_clock = global_video_pkt_pts;
-      } else {
-        global_clock = 0;
+                  // Handle repeated pictures
+                  if (pFrame->repeat_pict > 0) {
+                      double extra_delay = pFrame->repeat_pict * (frame_delay * 0.5);
+                      global_clock += extra_delay;
+                  }
+
+                  // Convert global clock to microseconds
+                  uint64_t usecs = (uint64_t)(global_clock * 1000000);
+                  stamps.push_back(usecs);
+
+                  // Increment frame count and update progress
+                  frame_count++;
+                  double percent = (double)frame_count / (double)num_frames;
+                  progress.write(percent);
+              }
+          }
       }
 
-      double frame_delay = av_q2d(video_stream->time_base);
-      global_clock *= frame_delay;
-
-      // Only if we are repeating the
-      if (pFrame->repeat_pict > 0) {
-        double extra_delay = pFrame->repeat_pict * (frame_delay * 0.5);
-        global_clock += extra_delay;
-      }
-
-      uint64_t usecs = (uint64_t)(global_clock * 1000000);
-      // std::cout << "Stamp: " << usecs << std::endl;
-      stamps.push_back(usecs);
-
-      frame_count++;
-      double percent = (double)frame_count / (double)num_frames;
-      progress.write(percent);
-    }
+      // Free the packet that was allocated by av_read_frame
+      av_packet_unref(&packet);
   }
 
   // Close the video file
@@ -414,34 +417,37 @@ void GoProVideoExtractor::displayImages() {
   int frameFinished;
   // cv::namedWindow("GoPro Video", cv::WINDOW_GUI_EXPANDED);
 
-  while (avcodec_receive_frame(pCodecContext, pFrame) >= 0) {
-    // Is this a packet from the video stream?
-    if (packet.stream_index == videoStreamIndex) {
-      // Decode video frame
-      // avcodec_decode_video2(pCodecContext, pFrame, &frameFinished, &packet);
+  while (av_read_frame(pFormatContext, &packet) >= 0) {
+      // Is this a packet from the video stream?
+      if (packet.stream_index == videoStreamIndex) {
+          // Send the packet to the decoder
+          if (avcodec_send_packet(pCodecContext, &packet) == 0) {
+              // Receive the decoded frame(s)
+              while (avcodec_receive_frame(pCodecContext, pFrame) == 0) {
+                  // Convert the image from its native format to RGB
+                  sws_scale(sws_ctx,
+                            (uint8_t const* const*)pFrame->data,
+                            pFrame->linesize,
+                            0,
+                            pCodecContext->height,
+                            pFrameRGB->data,
+                            pFrameRGB->linesize);
 
-      if (frameFinished) {
-        // Convert the image from its native format to RGB
-        sws_scale(sws_ctx,
-                  (uint8_t const* const*)pFrame->data,
-                  pFrame->linesize,
-                  0,
-                  pCodecContext->height,
-                  pFrameRGB->data,
-                  pFrameRGB->linesize);
+                  // Create OpenCV matrix and convert color format from RGB to BGR
+                  cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
+                  cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
 
-        cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
-        cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
-        // std::cout << "width: " << img.size().width << " height: " << img.size().height <<
-        // std::endl;
-        cv::imshow("GoPro Video", img);
-        cv::waitKey(1);
+                  // Display the video frame using OpenCV
+                  cv::imshow("GoPro Video", img);
+                  cv::waitKey(1);  // Display the image for 1 ms
+              }
+          }
       }
-    }
 
-    // Free the packet that was allocated by av_read_frame
-    av_packet_unref(&packet);
+      // Free the packet that was allocated by av_read_frame
+      av_packet_unref(&packet);
   }
+
 
   cv::destroyAllWindows();
 
@@ -498,72 +504,77 @@ void GoProVideoExtractor::writeVideo(const std::string& bag_file,
 
   int frameFinished;
   uint64_t seq = 0;
-  while (avcodec_receive_frame(pCodecContext, pFrame) >= 0) {
-    // Is this a packet from the video stream?
-    if (packet.stream_index == videoStreamIndex) {
-      // Decode video frame
-      // avcodec_decode_video2(pCodecContext, pFrame, &frameFinished, &packet);
+  while (av_read_frame(pFormatContext, &packet) >= 0) {
+      // Is this a packet from the video stream?
+      if (packet.stream_index == videoStreamIndex) {
+          // Send the packet to the decoder
+          if (avcodec_send_packet(pCodecContext, &packet) == 0) {
+              // Receive the decoded frame(s)
+              while (avcodec_receive_frame(pCodecContext, pFrame) == 0) {
 
-      // Did we get a video frame?
+                  // Calculate global clock
+                  if (packet.dts != AV_NOPTS_VALUE) {
+                      global_clock = pFrame->best_effort_timestamp;
+                      global_video_pkt_pts = packet.pts;
+                  } else if (global_video_pkt_pts && global_video_pkt_pts != AV_NOPTS_VALUE) {
+                      global_clock = global_video_pkt_pts;
+                  } else {
+                      global_clock = 0;
+                  }
 
-      if (packet.dts != AV_NOPTS_VALUE) {
-        global_clock = pFrame->best_effort_timestamp; // av_frame_get_best_effort_timestamp(pFrame);
-        global_video_pkt_pts = packet.pts;
-      } else if (global_video_pkt_pts && global_video_pkt_pts != AV_NOPTS_VALUE) {
-        global_clock = global_video_pkt_pts;
-      } else {
-        global_clock = 0;
+                  double frame_delay = av_q2d(video_stream->time_base);
+                  global_clock *= frame_delay;
+
+                  // Handle repeated pictures
+                  if (pFrame->repeat_pict > 0) {
+                      double extra_delay = pFrame->repeat_pict * (frame_delay * 0.5);
+                      global_clock += extra_delay;
+                  }
+
+                  // Convert the image from its native format to RGB
+                  sws_scale(sws_ctx,
+                            (uint8_t const* const*)pFrame->data,
+                            pFrame->linesize,
+                            0,
+                            pCodecContext->height,
+                            pFrameRGB->data,
+                            pFrameRGB->linesize);
+
+                  // Save the frame to disk
+                  uint64_t nanosecs = (uint64_t)(global_clock * 1e9);
+                  if (nanosecs > last_image_stamp_ns) {
+                      break;
+                  }
+                  uint64_t current_stamp = video_creation_time + nanosecs;
+                  uint32_t secs = current_stamp * 1e-9;
+                  uint32_t n_secs = current_stamp % 1000000000;
+                  ros::Time ros_time(secs, n_secs);
+
+                  // Convert to OpenCV Mat and then to ROS image
+                  cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
+                  cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+
+                  // Create ROS image message with timestamp and header
+                  std_msgs::Header header;
+                  header.stamp = ros_time;
+                  header.frame_id = "gopro";
+                  header.seq = seq++;
+
+                  sensor_msgs::ImagePtr imgmsg =
+                      cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, img).toImageMsg();
+                  bag.write(image_topic, ros_time, imgmsg);
+
+                  // Update progress
+                  double percent = (double)seq / (double)num_frames;
+                  progress.write(percent);
+              }
+          }
       }
 
-      double frame_delay = av_q2d(video_stream->time_base);
-      global_clock *= frame_delay;
-
-      // Only if we are repeating the
-      if (pFrame->repeat_pict > 0) {
-        double extra_delay = pFrame->repeat_pict * (frame_delay * 0.5);
-        global_clock += extra_delay;
-      }
-
-      if (frameFinished) {
-        // Convert the image from its native format to RGB
-        sws_scale(sws_ctx,
-                  (uint8_t const* const*)pFrame->data,
-                  pFrame->linesize,
-                  0,
-                  pCodecContext->height,
-                  pFrameRGB->data,
-                  pFrameRGB->linesize);
-
-        // Save the frame to disk
-        uint64_t nanosecs = (uint64_t)(global_clock * 1e9);
-        if (nanosecs > last_image_stamp_ns) {
-          break;
-        }
-        uint64_t current_stamp = video_creation_time + nanosecs;
-        uint32_t secs = current_stamp * 1e-9;
-        uint32_t n_secs = current_stamp % 1000000000;
-        ros::Time ros_time(secs, n_secs);
-
-        cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
-        cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
-
-        std_msgs::Header header;
-        header.stamp = ros_time;
-        header.frame_id = "gopro";
-        header.seq = seq++;
-
-        sensor_msgs::ImagePtr imgmsg =
-            cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, img).toImageMsg();
-        bag.write(image_topic, ros_time, imgmsg);
-
-        double percent = (double)seq / (double)num_frames;
-        progress.write(percent);
-      }
-    }
-
-    // Free the packet that was allocated by av_read_frame
-    av_packet_unref(&packet);
+      // Free the packet that was allocated by av_read_frame
+      av_packet_unref(&packet);
   }
+
 
   // Free the RGB image
   av_free(buffer);
@@ -617,86 +628,87 @@ void GoProVideoExtractor::writeVideo(rosbag::Bag& bag,
 
   int frameFinished;
   uint32_t frame_count = 0;
-  while (avcodec_receive_frame(pCodecContext, pFrame) >= 0) {
-    // Is this a packet from the video stream?
-    if (packet.stream_index == videoStreamIndex) {
-      // Decode video frame
-      // avcodec_decode_video2(pCodecContext, pFrame, &frameFinished, &packet);
+  while (av_read_frame(pFormatContext, &packet) >= 0) {
+      // Is this a packet from the video stream?
+      if (packet.stream_index == videoStreamIndex) {
+          // Send the packet to the decoder
+          if (avcodec_send_packet(pCodecContext, &packet) == 0) {
+              // Receive the decoded frame(s)
+              while (avcodec_receive_frame(pCodecContext, pFrame) == 0) {
+                  // Calculate global clock
+                  if (packet.dts != AV_NOPTS_VALUE) {
+                      global_clock = pFrame->best_effort_timestamp;
+                      global_video_pkt_pts = packet.pts;
+                  } else if (global_video_pkt_pts && global_video_pkt_pts != AV_NOPTS_VALUE) {
+                      global_clock = global_video_pkt_pts;
+                  } else {
+                      global_clock = 0;
+                  }
 
-      // Did we get a video frame?
+                  double frame_delay = av_q2d(video_stream->time_base);
+                  global_clock *= frame_delay;
 
-      if (packet.dts != AV_NOPTS_VALUE) {
-        global_clock = pFrame->best_effort_timestamp; // av_frame_get_best_effort_timestamp(pFrame);
-        global_video_pkt_pts = packet.pts;
-      } else if (global_video_pkt_pts && global_video_pkt_pts != AV_NOPTS_VALUE) {
-        global_clock = global_video_pkt_pts;
-      } else {
-        global_clock = 0;
+                  // Handle repeated pictures
+                  if (pFrame->repeat_pict > 0) {
+                      double extra_delay = pFrame->repeat_pict * (frame_delay * 0.5);
+                      global_clock += extra_delay;
+                  }
+
+                  // Convert the image from its native format to RGB
+                  sws_scale(sws_ctx,
+                            (uint8_t const* const*)pFrame->data,
+                            pFrame->linesize,
+                            0,
+                            pCodecContext->height,
+                            pFrameRGB->data,
+                            pFrameRGB->linesize);
+
+                  // Save the frame to disk
+                  uint64_t nanosecs = (uint64_t)(global_clock * 1e9);
+                  if (nanosecs > last_image_stamp_ns) {
+                      break;
+                  }
+                  uint64_t current_stamp = video_creation_time + nanosecs;
+                  uint32_t secs = current_stamp * 1e-9;
+                  uint32_t n_secs = current_stamp % 1000000000;
+                  ros::Time ros_time(secs, n_secs);
+
+                  cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
+                  cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+
+                  std::string encoding = sensor_msgs::image_encodings::BGR8;
+                  if (grayscale) {
+                      cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
+                      encoding = sensor_msgs::image_encodings::MONO8;
+                  }
+
+                  if (display_images) {
+                      cv::imshow("GoPro Video", img);
+                      cv::waitKey(1);
+                  }
+
+                  std_msgs::Header header;
+                  header.stamp = ros_time;
+                  header.frame_id = "gopro";
+
+                  if (compress_image) {
+                      sensor_msgs::CompressedImagePtr img_msg =
+                          cv_bridge::CvImage(header, encoding, img).toCompressedImageMsg();
+                      bag.write(image_topic + "/compressed", ros_time, img_msg);
+                  } else {
+                      sensor_msgs::ImagePtr imgmsg = cv_bridge::CvImage(header, encoding, img).toImageMsg();
+                      bag.write(image_topic, ros_time, imgmsg);
+                  }
+
+                  // Update progress
+                  double percent = (double)frame_count++ / (double)num_frames;
+                  progress.write(percent);
+              }
+          }
       }
 
-      double frame_delay = av_q2d(video_stream->time_base);
-      global_clock *= frame_delay;
-
-      // Only if we are repeating the
-      if (pFrame->repeat_pict > 0) {
-        double extra_delay = pFrame->repeat_pict * (frame_delay * 0.5);
-        global_clock += extra_delay;
-      }
-
-      if (frameFinished) {
-        // Convert the image from its native format to RGB
-        sws_scale(sws_ctx,
-                  (uint8_t const* const*)pFrame->data,
-                  pFrame->linesize,
-                  0,
-                  pCodecContext->height,
-                  pFrameRGB->data,
-                  pFrameRGB->linesize);
-
-        // Save the frame to disk
-        uint64_t nanosecs = (uint64_t)(global_clock * 1e9);
-        if (nanosecs > last_image_stamp_ns) {
-          break;
-        }
-        uint64_t current_stamp = video_creation_time + nanosecs;
-        uint32_t secs = current_stamp * 1e-9;
-        uint32_t n_secs = current_stamp % 1000000000;
-        ros::Time ros_time(secs, n_secs);
-
-        cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
-        cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
-
-        std::string encoding = sensor_msgs::image_encodings::BGR8;
-        if (grayscale) {
-          cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
-          encoding = sensor_msgs::image_encodings::MONO8;
-        }
-
-        if (display_images) {
-          cv::imshow("GoPro Video", img);
-          cv::waitKey(1);
-        }
-
-        std_msgs::Header header;
-        header.stamp = ros_time;
-        header.frame_id = "gopro";
-
-        if (compress_image) {
-          sensor_msgs::CompressedImagePtr img_msg =
-              cv_bridge::CvImage(header, encoding, img).toCompressedImageMsg();
-          bag.write(image_topic + "/compressed", ros_time, img_msg);
-        } else {
-          sensor_msgs::ImagePtr imgmsg = cv_bridge::CvImage(header, encoding, img).toImageMsg();
-          bag.write(image_topic, ros_time, imgmsg);
-        }
-      }
-
-      double percent = (double)frame_count++ / (double)num_frames;
-      progress.write(percent);
-    }
-
-    // Free the packet that was allocated by av_read_frame
-    av_packet_unref(&packet);
+      // Free the packet that was allocated by av_read_frame
+      av_packet_unref(&packet);
   }
 
   cv::destroyAllWindows();
@@ -751,73 +763,75 @@ void GoProVideoExtractor::writeVideo(rosbag::Bag& bag,
 
   int frameFinished;
   uint32_t frame_count = 0;
-  while (avcodec_receive_frame(pCodecContext, pFrame) >= 0) {
-    // Is this a packet from the video stream?
-    if (packet.stream_index == videoStreamIndex) {
-      // Decode video frame
-      // avcodec_decode_video2(pCodecContext, pFrame, &frameFinished, &packet);
+  while (av_read_frame(pFormatContext, &packet) >= 0) {
+      // Is this a packet from the video stream?
+      if (packet.stream_index == videoStreamIndex) {
+          // Send the packet to the decoder
+          if (avcodec_send_packet(pCodecContext, &packet) == 0) {
+              // Receive the decoded frame(s)
+              while (avcodec_receive_frame(pCodecContext, pFrame) == 0) {
+                  
+                  if (frame_count == image_stamps.size()) {
+                      ROS_WARN_STREAM(
+                          "Number of images does not match number of timestamps. This should only happen in "
+                          "last/single GoPro Video !!");
+                      ROS_WARN_STREAM("Skipping " << num_frames - image_stamps.size() << "/" << num_frames
+                                                  << " images");
+                      break;
+                  }
 
-      if (frame_count == image_stamps.size()) {
-        ROS_WARN_STREAM(
-            "Number of images does not match number of timestamps. This should only happen in "
-            "last/single GoPro Video !!");
-        ROS_WARN_STREAM("Skipping " << num_frames - image_stamps.size() << "/" << num_frames
-                                    << " images");
-        break;
+                  // Convert the image from its native format to RGB
+                  sws_scale(sws_ctx,
+                            (uint8_t const* const*)pFrame->data,
+                            pFrame->linesize,
+                            0,
+                            pCodecContext->height,
+                            pFrameRGB->data,
+                            pFrameRGB->linesize);
+
+                  // Save the frame to disk
+                  uint64_t current_stamp = image_stamps[frame_count];
+                  uint32_t secs = current_stamp * 1e-9;
+                  uint32_t n_secs = current_stamp % 1000000000;
+                  ros::Time ros_time(secs, n_secs);
+
+                  cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
+                  cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+
+                  std::string encoding = sensor_msgs::image_encodings::BGR8;
+                  if (grayscale) {
+                      cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
+                      encoding = sensor_msgs::image_encodings::MONO8;
+                  }
+
+                  if (display_images) {
+                      cv::imshow("GoPro Video", img);
+                      cv::waitKey(1);
+                  }
+
+                  std_msgs::Header header;
+                  header.stamp = ros_time;
+                  header.frame_id = "gopro";
+                  header.seq = frame_count++;
+
+                  if (compress_image) {
+                      sensor_msgs::CompressedImagePtr img_msg =
+                          cv_bridge::CvImage(header, encoding, img).toCompressedImageMsg();
+                      bag.write(image_topic + "/compressed", ros_time, img_msg);
+                  } else {
+                      sensor_msgs::ImagePtr imgmsg = cv_bridge::CvImage(header, encoding, img).toImageMsg();
+                      bag.write(image_topic, ros_time, imgmsg);
+                  }
+
+                  // Update progress
+                  double percent = (double)frame_count / (double)num_frames;
+                  progress.write(percent);
+              }
+          }
       }
-      // Did we get a video frame?
 
-      if (frameFinished) {
-        // Convert the image from its native format to RGB
-        sws_scale(sws_ctx,
-                  (uint8_t const* const*)pFrame->data,
-                  pFrame->linesize,
-                  0,
-                  pCodecContext->height,
-                  pFrameRGB->data,
-                  pFrameRGB->linesize);
-
-        // Save the frame to disk
-        uint64_t current_stamp = image_stamps[frame_count];
-        uint32_t secs = current_stamp * 1e-9;
-        uint32_t n_secs = current_stamp % 1000000000;
-        ros::Time ros_time(secs, n_secs);
-
-        cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
-        cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
-
-        std::string encoding = sensor_msgs::image_encodings::BGR8;
-        if (grayscale) {
-          cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
-          encoding = sensor_msgs::image_encodings::MONO8;
-        }
-
-        if (display_images) {
-          cv::imshow("GoPro Video", img);
-          cv::waitKey(1);
-        }
-
-        std_msgs::Header header;
-        header.stamp = ros_time;
-        header.frame_id = "gopro";
-        header.seq = frame_count++;
-
-        if (compress_image) {
-          sensor_msgs::CompressedImagePtr img_msg =
-              cv_bridge::CvImage(header, encoding, img).toCompressedImageMsg();
-          bag.write(image_topic + "/compressed", ros_time, img_msg);
-        } else {
-          sensor_msgs::ImagePtr imgmsg = cv_bridge::CvImage(header, encoding, img).toImageMsg();
-          bag.write(image_topic, ros_time, imgmsg);
-        }
-      }
-
-      double percent = (double)frame_count / (double)num_frames;
-      progress.write(percent);
-    }
-
-    // Free the packet that was allocated by av_read_frame
-    av_packet_unref(&packet);
+      // Free the packet that was allocated by av_read_frame
+      av_packet_unref(&packet);
   }
 
   cv::destroyAllWindows();
@@ -873,61 +887,64 @@ int GoProVideoExtractor::extractFrames(const std::string& image_folder,
 
   int frameFinished;
   uint32_t frame_count = 0;
-  while (avcodec_receive_frame(pCodecContext, pFrame) >= 0) {
-    // Is this a packet from the video stream?
-    if (packet.stream_index == videoStreamIndex) {
-      // Decode video frame
-      // avcodec_decode_video2(pCodecContext, pFrame, &frameFinished, &packet);
+  while (av_read_frame(pFormatContext, &packet) >= 0) {
+      // Is this a packet from the video stream?
+      if (packet.stream_index == videoStreamIndex) {
+          // Send the packet to the decoder
+          if (avcodec_send_packet(pCodecContext, &packet) == 0) {
+              // Receive the decoded frame(s)
+              while (avcodec_receive_frame(pCodecContext, pFrame) == 0) {
 
-      if (frame_count == image_stamps.size()) {
-        ROS_WARN_STREAM(
-            "Number of images does not match number of timestamps. This should only happen in "
-            "last/single GoPro Video !!");
-        ROS_WARN_STREAM("Skipping " << num_frames - image_stamps.size() << "/" << num_frames
-                                    << " images");
-        break;
+                  if (frame_count == image_stamps.size()) {
+                      ROS_WARN_STREAM(
+                          "Number of images does not match number of timestamps. This should only happen in "
+                          "last/single GoPro Video !!");
+                      ROS_WARN_STREAM("Skipping " << num_frames - image_stamps.size() << "/" << num_frames
+                                                  << " images");
+                      break;
+                  }
+
+                  // Convert the image from its native format to RGB
+                  sws_scale(sws_ctx,
+                            (uint8_t const* const*)pFrame->data,
+                            pFrame->linesize,
+                            0,
+                            pCodecContext->height,
+                            pFrameRGB->data,
+                            pFrameRGB->linesize);
+
+                  uint64_t current_stamp = image_stamps[frame_count];
+                  std::string string_stamp = uint64_to_string(current_stamp);
+                  std::string stamped_image_filename = image_data_folder + "/" + string_stamp;
+                  image_stream << string_stamp << "," << string_stamp + ".png" << std::endl;
+
+                  cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
+                  cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+
+                  if (grayscale) {
+                      cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
+                  }
+
+                  if (display_images) {
+                      cv::imshow("GoPro Video", img);
+                      cv::waitKey(1);
+                  }
+
+                  // Save the frame as a PNG image
+                  cv::imwrite(stamped_image_filename + ".png", img);
+                  frame_count++;
+
+                  // Update progress
+                  double percent = (double)frame_count / (double)num_frames;
+                  progress.write(percent);
+              }
+          }
       }
 
-      // Did we get a video frame?
-
-      if (frameFinished) {
-        // Convert the image from its native format to RGB
-        sws_scale(sws_ctx,
-                  (uint8_t const* const*)pFrame->data,
-                  pFrame->linesize,
-                  0,
-                  pCodecContext->height,
-                  pFrameRGB->data,
-                  pFrameRGB->linesize);
-
-        uint64_t current_stamp = image_stamps[frame_count];
-        std::string string_stamp = uint64_to_string(current_stamp);
-        std::string stamped_image_filename = image_data_folder + "/" + string_stamp;
-        image_stream << string_stamp << "," << string_stamp + ".png" << std::endl;
-
-        cv::Mat img(image_height, image_width, CV_8UC3, pFrameRGB->data[0], pFrameRGB->linesize[0]);
-        cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
-
-        if (grayscale) {
-          cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
-        }
-
-        if (display_images) {
-          cv::imshow("GoPro Video", img);
-          cv::waitKey(1);
-        }
-
-        cv::imwrite(stamped_image_filename + ".png", img);
-        frame_count++;
-      }
-
-      double percent = (double)frame_count / (double)num_frames;
-      progress.write(percent);
-    }
-
-    // Free the packet that was allocated by av_read_frame
-    av_packet_unref(&packet);
+      // Free the packet that was allocated by av_read_frame
+      av_packet_unref(&packet);
   }
+
 
   image_stream.close();
 

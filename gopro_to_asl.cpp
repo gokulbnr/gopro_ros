@@ -11,6 +11,8 @@
 #include "VideoExtractor.h"
 #include "color_codes.h"
 
+#include <fstream>
+
 using namespace std;
 namespace fs = std::experimental::filesystem;
 
@@ -159,7 +161,7 @@ int main(int argc, char* argv[]) {
   ROS_INFO_STREAM("[ACCL] Payloads: " << accl_queue.size());
   ROS_INFO_STREAM("[GYRO] Payloads: " << gyro_queue.size());
 
-  ofstream imu_stream;
+  std::ofstream imu_stream;
   imu_stream.open(imu_file);
   imu_stream << std::fixed << std::setprecision(19);
   imu_stream << "#timestamp [ns],w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],"
